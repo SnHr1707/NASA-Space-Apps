@@ -13,7 +13,7 @@ body {
   overflow: hidden; /* Prevent the main body from scrolling */
 }
 
-/* Custom animation to fade in the results panel for a smoother feel */
+/* Custom animation to fade in elements */
 @keyframes fadeIn {
   from { opacity: 0; transform: translateY(10px); }
   to { opacity: 1; transform: translateY(0); }

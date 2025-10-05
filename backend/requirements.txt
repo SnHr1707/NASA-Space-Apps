@@ -1,0 +1,14 @@
+fastapi
+uvicorn[standard]
+scikit-learn
+xgboost
+pandas
+geopy
+joblib
+python-multipart
+requests
+python-dotenv
+Pillow
+earthaccess
+xarray
+h5netcdf

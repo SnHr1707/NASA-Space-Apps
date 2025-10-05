@@ -1,68 +1,76 @@
-from flask import Flask, request, Response, send_file
-from flask_cors import CORS
-import requests
-from PIL import Image
-import io
+# backend/app.py
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from model import shark_predictor
 
-app = Flask(__name__)
-CORS(app)
+app = FastAPI(title="Sharky Prediction API")
 
-@app.route('/api/image-proxy')
-def image_proxy():
-    image_url = request.args.get('url')
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-    if not image_url:
-        return "URL parameter is required.", 400
+class PredictionInput(BaseModel):
+    latitude: float
+    longitude: float
 
-    try:
-        # Fetch the image from the NASA server
-        nasa_response = requests.get(image_url, stream=True)
-        nasa_response.raise_for_status()
+@app.on_event("startup")
+async def startup_event():
+    shark_predictor.load_model()
 
-        # --- IMAGE PROCESSING TO MAKE BACKGROUND TRANSPARENT ---
-        
-        # Open the image from the raw binary data and ensure it has an alpha channel
-        original_image = Image.open(io.BytesIO(nasa_response.content)).convert("RGBA")
-        
-        # Get the pixel data
-        pixel_data = original_image.getdata()
+@app.get("/")
+def read_root():
+    return {"message": "Welcome to the Sharky Prediction API"}
 
-        new_pixel_data = []
-        for item in pixel_data:
-            # Check if the pixel is black (or very dark)
-            # A tolerance (e.g., 15) is used to catch near-black compression artifacts
-            if item[0] < 15 and item[1] < 15 and item[2] < 15:
-                # If it's black, make it fully transparent
-                new_pixel_data.append((255, 255, 255, 0))
-            else:
-                # Otherwise, keep the original pixel
-                new_pixel_data.append(item)
+@app.get("/hotspots")
+def get_hotspots():
+    """
+    Loads the calculated hotspots, converts them to GeoJSON format, and returns them.
+    """
+    if shark_predictor.hotspots is None:
+        raise HTTPException(status_code=503, detail="Hotspots are not loaded or trained yet.")
 
-        # Apply the new transparent pixel data to the image
-        original_image.putdata(new_pixel_data)
+    # Convert the numpy array of [lat, lon] into a GeoJSON Feature Collection
+    # Note: GeoJSON coordinates are in [longitude, latitude] order.
+    hotspot_features = []
+    for i, (lat, lon) in enumerate(shark_predictor.hotspots):
+        feature = {
+            "type": "Feature",
+            "geometry": {
+                "type": "Point",
+                "coordinates": [lon, lat]  # Correct [lon, lat] order for GeoJSON
+            },
+            "properties": {
+                # Add properties that the frontend tooltip expects
+                "name": f"Calculated Hotspot #{i + 1}",
+                "species": "Various Species"
+            }
+        }
+        hotspot_features.append(feature)
 
-        # Save the modified image to an in-memory buffer
-        img_io = io.BytesIO()
-        original_image.save(img_io, 'PNG')
-        img_io.seek(0) # Move the buffer's cursor to the beginning
+    geojson_data = {
+        "type": "FeatureCollection",
+        "features": hotspot_features
+    }
 
-        # Send the processed image back to the frontend
-        return send_file(img_io, mimetype='image/png')
-        # ---------------------------------------------------------
+    return geojson_data
 
-    except requests.exceptions.RequestException as e:
-        # If the image doesn't exist for a specific day, NASA returns an error.
-        # We'll return a simple 1x1 transparent pixel to avoid breaking the map.
-        if e.response and e.response.status_code == 404:
-            # Create a 1x1 transparent PNG
-            transparent_pixel = Image.new('RGBA', (1, 1), (0, 0, 0, 0))
-            img_io = io.BytesIO()
-            transparent_pixel.save(img_io, 'PNG')
-            img_io.seek(0)
-            return send_file(img_io, mimetype='image/png')
+@app.post("/predict")
+def predict(data: PredictionInput):
+    """
+    Accepts latitude and longitude, fetches environmental data,
+    and returns the predicted probability of shark presence.
+    """
+    result = shark_predictor.predict_shark_presence(
+        latitude=data.latitude,
+        longitude=data.longitude
+    )
 
-        print(f"Error fetching image: {e}")
-        return f"Failed to fetch image from URL: {image_url}", 502
+    if "error" in result:
+        raise HTTPException(status_code=503, detail=result["error"])
 
-if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+    return result
